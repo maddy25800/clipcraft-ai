@@ -8,7 +8,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-import anthropic
+import requests
 
 app = FastAPI(title="ClipCraft AI")
 
@@ -19,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 
 UPLOAD_DIR = Path("uploads")
 OUTPUT_DIR = Path("outputs")
@@ -70,7 +70,7 @@ async def transcribe_video(file: UploadFile = File(...)):
     }
 
 
-# ─── STEP 2: Analyze with Claude ───────────────────────────────
+# ─── STEP 2: Analyze with Groq (FREE) ─────────────────────────
 @app.post("/api/analyze")
 async def analyze_clips(data: dict):
     segments = data["segments"]
@@ -80,19 +80,25 @@ async def analyze_clips(data: dict):
         f"[{s['start']} - {s['end']}] {s['text']}" for s in segments
     )
 
-    message = anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1500,
-        messages=[{
-            "role": "user",
-            "content": f"""You are a viral short-form video editor. Analyze this transcript and find the 5 best clips for TikTok/Reels/Shorts (each under 60 seconds).
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "llama3-8b-8192",
+            "max_tokens": 1500,
+            "messages": [{
+                "role": "user",
+                "content": f"""You are a viral short-form video editor. Analyze this transcript and find the 5 best clips for TikTok/Reels/Shorts (each under 60 seconds).
 
 Look for: strong hooks, complete thoughts, high energy moments, actionable tips, natural start/end points.
 
 Transcript:
 {formatted}
 
-Return ONLY a JSON array, no markdown:
+Return ONLY a JSON array, no markdown, no explanation:
 [
   {{
     "id": 1,
@@ -108,10 +114,11 @@ Return ONLY a JSON array, no markdown:
     "tags": ["#tag1", "#tag2", "#tag3"]
   }}
 ]"""
-        }]
+            }]
+        }
     )
 
-    text = message.content[0].text
+    text = response.json()["choices"][0]["message"]["content"]
     clips = json.loads(text.replace("```json", "").replace("```", "").strip())
     for clip in clips:
         clip["video_path"] = video_path
@@ -238,3 +245,4 @@ def generate_srt(clip: dict, srt_path: str, offset: float = 0):
             cs = start + i * (duration / len(chunks))
             ce = start + (i + 1) * (duration / len(chunks))
             f.write(f"{i+1}\n{format_srt_time(cs)} --> {format_srt_time(ce)}\n{' '.join(chunk)}\n\n")
+            
